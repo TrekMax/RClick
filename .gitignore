@@ -57,4 +57,4 @@ playground.xcworkspace
 
 output/*
 Build/
-DerivedData/
+.DS_Store
