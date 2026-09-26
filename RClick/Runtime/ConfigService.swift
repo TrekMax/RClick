@@ -58,6 +58,8 @@ final class ConfigService {
             )
         } ?? []
 
+        data.actions = RCAction.mergingMissingDefaults(into: data.actions)
+
         // NewFiles
         let newFileDescriptor = FetchDescriptor<NewFileTypeEntity>(sortBy: [SortDescriptor(\.sortOrder)])
         data.newFiles = (try? modelContext.fetch(newFileDescriptor))?.map { entity in

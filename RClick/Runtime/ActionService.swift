@@ -20,9 +20,15 @@ final class ActionService {
     private let state: ActionStateProviding
     private let permission: PermissionProviding
 
-    init(state: ActionStateProviding, permission: PermissionProviding) {
+    private let cutStore: UserDefaults
+    private let pasteboard: NSPasteboard
+
+    init(state: ActionStateProviding, permission: PermissionProviding,
+         cutStore: UserDefaults = .group, pasteboard: NSPasteboard = .general) {
         self.state = state
         self.permission = permission
+        self.cutStore = cutStore
+        self.pasteboard = pasteboard
     }
 
     // MARK: - SystemActions
@@ -130,6 +136,10 @@ final class ActionService {
         switch rcitem.id {
         case "copy-path":
             copyPath(target)
+        case "cut":
+            await cutFilesAndDirs(target, trigger)
+        case "paste":
+            await pasteFilesAndDirs(target, trigger)
         case "delete-direct":
             await deleteFoldorFile(target, trigger)
         case "unhide":
@@ -141,6 +151,183 @@ final class ActionService {
         default:
             logger.warning("no action id matched")
         }
+    }
+
+    func cutFilesAndDirs(_ target: [String], _ trigger: String) async {
+        logger.info("---- cutFilesAndDirs trigger:\(trigger)")
+        if trigger == "ctx-container" {
+            showWarning(message: "Warning", informativeText: "The current folder cannot be cut. Please select files or subfolders instead.")
+            return
+        }
+
+        var paths: [String] = []
+        for path in target {
+            let url = URL(fileURLWithPath: path)
+            if Utils.isProtectedFolder(url.path + "/") {
+                logger.warning("跳过受保护的文件路径: \(path)")
+                continue
+            }
+            guard await ensureTransferAccess(to: url, promptFor: url.deletingLastPathComponent()) else {
+                continue
+            }
+            if FileManager.default.fileExists(atPath: path) {
+                paths.append(path)
+            }
+        }
+
+        guard !paths.isEmpty else {
+            showWarning(message: "Notice", informativeText: "No files or folders are available to cut.")
+            return
+        }
+
+        cutStore.set(paths, forKey: Key.cutFilePaths)
+        logger.info("已记录剪切项目: \(paths.joined(separator: ", "))")
+    }
+
+    func pasteFilesAndDirs(_ target: [String], _ trigger: String) async {
+        logger.info("---- pasteFilesAndDirs trigger:\(trigger)")
+        let fileManager = FileManager.default
+
+        if let path = target.first {
+            let targetURL = URL(fileURLWithPath: path)
+            // Resolve the target's type only after its bookmark scope is active.
+            guard await ensureTransferAccess(to: targetURL, promptFor: targetURL.deletingLastPathComponent()) else {
+                return
+            }
+        }
+
+        guard let destinationDirectory = FileMovePlanner.destinationDirectory(from: target, fileManager: fileManager) else {
+            showWarning(message: "Notice", informativeText: "No destination folder is available for pasting.")
+            return
+        }
+
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: destinationDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            showWarning(message: "Notice", informativeText: "The paste destination is not a valid folder.")
+            return
+        }
+
+        if Utils.isProtectedFolder(destinationDirectory.path + "/") {
+            showWarning(message: "Warning", informativeText: "Files cannot be pasted into protected system folders.")
+            return
+        }
+
+        let cutPaths = cutStore.stringArray(forKey: Key.cutFilePaths) ?? []
+        if !cutPaths.isEmpty {
+            let failedPaths = await moveCutItems(cutPaths, to: destinationDirectory)
+            if failedPaths.isEmpty {
+                cutStore.removeObject(forKey: Key.cutFilePaths)
+            } else {
+                cutStore.set(failedPaths, forKey: Key.cutFilePaths)
+            }
+            return
+        }
+
+        let pasteboardURLs = pasteboardFileURLs()
+        guard !pasteboardURLs.isEmpty else {
+            showWarning(message: "Notice", informativeText: "No files or folders are available to paste.")
+            return
+        }
+
+        await copyPasteboardItems(pasteboardURLs, to: destinationDirectory)
+    }
+
+    private func moveCutItems(_ paths: [String], to destinationDirectory: URL) async -> [String] {
+        var failedPaths: [String] = []
+        let fileManager = FileManager.default
+
+        for path in paths {
+            let sourceURL = URL(fileURLWithPath: path)
+            if await transferItem(sourceURL, to: destinationDirectory, operation: .move, fileManager: fileManager) == false {
+                failedPaths.append(path)
+            }
+        }
+
+        return failedPaths
+    }
+
+    private func copyPasteboardItems(_ urls: [URL], to destinationDirectory: URL) async {
+        let fileManager = FileManager.default
+
+        for url in urls {
+            _ = await transferItem(url, to: destinationDirectory, operation: .copy, fileManager: fileManager)
+        }
+    }
+
+    private enum FileTransferOperation {
+        case move
+        case copy
+    }
+
+    private func transferItem(_ sourceURL: URL, to destinationDirectory: URL, operation: FileTransferOperation, fileManager: FileManager) async -> Bool {
+        let sourcePath = sourceURL.path
+        let destinationPath = destinationDirectory.path
+
+        if Utils.isProtectedFolder(sourcePath + "/") {
+            logger.warning("跳过受保护的文件路径: \(sourcePath)")
+            return false
+        }
+
+        // Moving removes the source directory entry, so its parent must be writable.
+        let sourceAccessURL = operation == .move ? sourceURL.deletingLastPathComponent() : sourceURL
+        guard await ensureTransferAccess(to: sourceAccessURL),
+              await ensureTransferAccess(to: destinationDirectory) else {
+            return false
+        }
+
+        guard fileManager.fileExists(atPath: sourcePath) else {
+            logger.warning("源文件不存在: \(sourcePath)")
+            return false
+        }
+
+        if operation == .move, destinationPath == sourcePath || destinationPath.hasPrefix(sourcePath + "/") {
+            logger.warning("不能将项目移动到自身或自身子目录: \(sourcePath) -> \(destinationPath)")
+            return false
+        }
+
+        let destinationURL = FileMovePlanner.availableDestination(for: sourceURL, in: destinationDirectory, fileManager: fileManager)
+        do {
+            switch operation {
+            case .move:
+                try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                logger.info("已移动: \(sourcePath) -> \(destinationURL.path)")
+            case .copy:
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                logger.info("已复制: \(sourcePath) -> \(destinationURL.path)")
+            }
+            return true
+        } catch {
+            logger.error("文件传输失败: \(sourcePath) -> \(destinationURL.path), error: \(error)")
+            return false
+        }
+    }
+
+    private func pasteboardFileURLs() -> [URL] {
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ?? []
+        return objects.compactMap { object in
+            if let url = object as? URL {
+                return url
+            }
+            if let nsURL = object as? NSURL {
+                return nsURL as URL
+            }
+            return nil
+        }
+    }
+
+    private func ensureTransferAccess(to url: URL, promptFor directory: URL? = nil) async -> Bool {
+        if permission.hasAccess(to: url) { return true }
+        guard await permission.promptForPermission(for: directory ?? url) != nil else { return false }
+        return permission.hasAccess(to: url)
+    }
+
+    private func showWarning(message: String, informativeText: String) {
+        let alert = NSAlert()
+        alert.messageText = AppLocalization.localized(message)
+        alert.informativeText = AppLocalization.localized(informativeText)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: AppLocalization.localized("OK"))
+        alert.runModal()
     }
 
     func showAirDrop(_ target: [String], _ trigger: String) async {

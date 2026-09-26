@@ -208,8 +208,22 @@ extension RCAction {
     static let hideFileDir = RCAction(id: "hide", name: "Hide", enabled: false, idx: 2, icon: "eye.slash")
     static let unhideFileDir = RCAction(id: "unhide", name: "Unhide", enabled: false, idx: 3, icon: "eye")
     static let airdrop = RCAction(id: "airdrop", name: "AirDrop", enabled: false, idx: 4, icon: "paperplane")
+    static let cut = RCAction(id: "cut", name: "Cut", idx: 5, icon: "scissors")
+    static let paste = RCAction(id: "paste", name: "Paste", idx: 6, icon: "clipboard")
 
-    static let all: [RCAction] = [.copyPath, .deleteDirect, .airdrop, .hideFileDir, .unhideFileDir]
+    static let all: [RCAction] = [.copyPath, .deleteDirect, .airdrop, .hideFileDir, .unhideFileDir, .cut, .paste]
+
+    static func mergingMissingDefaults(into actions: [RCAction]) -> [RCAction] {
+        var merged = actions
+        var existingIds = Set(actions.map(\.id))
+        var nextIndex = (actions.map(\.idx).max() ?? -1) + 1
+        for var action in all where existingIds.insert(action.id).inserted {
+            action.idx = nextIndex
+            nextIndex += 1
+            merged.append(action)
+        }
+        return merged
+    }
 }
 
 // New File Type
@@ -356,6 +370,8 @@ extension RCAction {
     var displayName: String {
         switch id {
         case "copy-path": return AppLocalization.localized("Copy Path")
+        case "cut": return AppLocalization.localized("Cut")
+        case "paste": return AppLocalization.localized("Paste")
         case "delete-direct": return AppLocalization.localized("Delete Direct")
         case "hide": return AppLocalization.localized("Hide")
         case "unhide": return AppLocalization.localized("Unhide")

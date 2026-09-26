@@ -6,6 +6,7 @@
 //  验证"未授权 + 用户取消"时文件操作被跳过。
 //
 
+import AppKit
 import Foundation
 import SwiftData
 import Testing
@@ -34,7 +35,7 @@ final class ActionServiceTests {
         var showCommonDirs = false
 
         func getAppItem(rid: String) -> OpenWithApp? { nil }
-        func getActionItem(rid: String) -> RCAction? { nil }
+        func getActionItem(rid: String) -> RCAction? { actions.first { $0.id == rid } }
         func getFileType(rid: String) -> NewFile? { nil }
     }
 
@@ -112,6 +113,72 @@ final class ActionServiceTests {
             #expect(loaded.openApp == file.openApp)
             try service.save(AppConfigData(newFiles: [loaded]))
         }
+    }
+
+    @Test(arguments: [true, false])
+    func cutPasteRespectsPermissionAndPreservesFailedQueue(authorized: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("rclick-transfer-\(UUID())")
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("Literal%20Name.txt")
+        try Data("source".utf8).write(to: source)
+        try Data("existing".utf8).write(to: destination.appendingPathComponent(source.lastPathComponent))
+
+        let suite = "rclick-cut-test-\(UUID())"
+        let store = try #require(UserDefaults(suiteName: suite))
+        defer { store.removePersistentDomain(forName: suite) }
+        let permission = MockPermission()
+        permission.hasAccessResult = true
+        let state = MockState()
+        state.actions = [
+            RCAction(id: "cut", name: "Cut", idx: 5, icon: "scissors"),
+            RCAction(id: "paste", name: "Paste", idx: 6, icon: "clipboard")
+        ]
+        let service = ActionService(state: state, permission: permission, cutStore: store)
+
+        await service.actionHandler(rid: "cut", target: [source.path], trigger: "ctx-items")
+        #expect(fm.fileExists(atPath: source.path))
+        #expect(store.stringArray(forKey: Key.cutFilePaths) == [source.path])
+        permission.hasAccessResult = authorized
+        await service.actionHandler(rid: "paste", target: [destination.path], trigger: "ctx-container")
+
+        #expect(try String(contentsOf: destination.appendingPathComponent(source.lastPathComponent), encoding: .utf8) == "existing")
+        if authorized {
+            #expect(!fm.fileExists(atPath: source.path))
+            #expect(try String(contentsOf: destination.appendingPathComponent("Literal%20Name 1.txt"), encoding: .utf8) == "source")
+            #expect(store.object(forKey: Key.cutFilePaths) == nil)
+        } else {
+            #expect(fm.fileExists(atPath: source.path))
+            #expect(store.stringArray(forKey: Key.cutFilePaths) == [source.path])
+        }
+    }
+
+    @Test func pasteWithoutCutQueueCopiesClipboardFile() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("rclick-copy-\(UUID())")
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("File.txt")
+        try Data("copied".utf8).write(to: source)
+        let suite = "rclick-copy-test-\(UUID())"
+        let store = try #require(UserDefaults(suiteName: suite))
+        defer { store.removePersistentDomain(forName: suite) }
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        #expect(board.writeObjects([source as NSURL]))
+        let permission = MockPermission()
+        permission.hasAccessResult = true
+        let state = MockState()
+        state.actions = [RCAction(id: "paste", name: "Paste", idx: 6, icon: "clipboard")]
+        let service = ActionService(state: state, permission: permission, cutStore: store, pasteboard: board)
+
+        await service.actionHandler(rid: "paste", target: [destination.path], trigger: "ctx-container")
+
+        #expect(fm.fileExists(atPath: source.path))
+        #expect(try String(contentsOf: destination.appendingPathComponent("File.txt"), encoding: .utf8) == "copied")
     }
 
 }

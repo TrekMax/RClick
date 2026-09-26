@@ -39,6 +39,7 @@ enum Key {
     static let showInDock = "SHOW_IN_DOCK"
     static let actionMenuItems = "RCLICK_ACTION_MENU_ITEMS"
     static let appMenuItems = "RCLICK_APP_MENU_ITEMS"
+    static let cutFilePaths = "RCLICK_CUT_FILE_PATHS"
 
 }
 

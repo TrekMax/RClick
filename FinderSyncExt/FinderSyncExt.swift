@@ -532,7 +532,7 @@ class FinderSyncExt: FIFinderSync, @unchecked Sendable {
         let event = ClickEventPayload(
             itemId: action.id,
             itemType: .action,
-            target: itemPaths,
+            target: action.id == "paste" ? newFileTargetPaths() : itemPaths,
             trigger: getTriggerForMenuKind()
         )
         sendClickEvent(event)
