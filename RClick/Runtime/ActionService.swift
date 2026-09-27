@@ -20,14 +20,14 @@ final class ActionService {
     private let state: ActionStateProviding
     private let permission: PermissionProviding
 
-    private let cutStore: UserDefaults
+    private let fileClipboard: FileClipboard
     private let pasteboard: NSPasteboard
 
     init(state: ActionStateProviding, permission: PermissionProviding,
          cutStore: UserDefaults = .group, pasteboard: NSPasteboard = .general) {
         self.state = state
         self.permission = permission
-        self.cutStore = cutStore
+        self.fileClipboard = FileClipboard(pasteboard: pasteboard, store: cutStore)
         self.pasteboard = pasteboard
     }
 
@@ -36,7 +36,6 @@ final class ActionService {
     /// 复制路径到剪贴板
     func copyPath(_ target: [String]) {
         if let dirPath = target.first {
-            let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(dirPath.removingPercentEncoding ?? dirPath, forType: .string)
         }
@@ -180,13 +179,19 @@ final class ActionService {
             return
         }
 
-        cutStore.set(paths, forKey: Key.cutFilePaths)
+        guard fileClipboard.writeCut(paths: paths) else {
+            showWarning(message: "Warning", informativeText: "Could not put files on the clipboard. Please try cutting again.")
+            return
+        }
         logger.info("已记录剪切项目: \(paths.joined(separator: ", "))")
     }
 
     func pasteFilesAndDirs(_ target: [String], _ trigger: String) async {
         logger.info("---- pasteFilesAndDirs trigger:\(trigger)")
         let fileManager = FileManager.default
+        // Capture the requested source before a permission dialog can suspend this action.
+        let cut = fileClipboard.pendingCut()
+        let pasteboardURLs = cut == nil ? fileClipboard.fileURLs() : []
 
         if let path = target.first {
             let targetURL = URL(fileURLWithPath: path)
@@ -212,18 +217,12 @@ final class ActionService {
             return
         }
 
-        let cutPaths = cutStore.stringArray(forKey: Key.cutFilePaths) ?? []
-        if !cutPaths.isEmpty {
-            let failedPaths = await moveCutItems(cutPaths, to: destinationDirectory)
-            if failedPaths.isEmpty {
-                cutStore.removeObject(forKey: Key.cutFilePaths)
-            } else {
-                cutStore.set(failedPaths, forKey: Key.cutFilePaths)
-            }
+        if let cut {
+            let failedPaths = await moveCutItems(cut.paths, to: destinationDirectory)
+            fileClipboard.finishMove(cut, failedPaths: failedPaths)
             return
         }
 
-        let pasteboardURLs = pasteboardFileURLs()
         guard !pasteboardURLs.isEmpty else {
             showWarning(message: "Notice", informativeText: "No files or folders are available to paste.")
             return
@@ -299,19 +298,6 @@ final class ActionService {
         } catch {
             logger.error("文件传输失败: \(sourcePath) -> \(destinationURL.path), error: \(error)")
             return false
-        }
-    }
-
-    private func pasteboardFileURLs() -> [URL] {
-        let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ?? []
-        return objects.compactMap { object in
-            if let url = object as? URL {
-                return url
-            }
-            if let nsURL = object as? NSURL {
-                return nsURL as URL
-            }
-            return nil
         }
     }
 

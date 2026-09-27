@@ -1474,6 +1474,41 @@
         }
       }
     },
+    "Could not put files on the clipboard. Please try cutting again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not put files on the clipboard. Please try cutting again."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudieron colocar los archivos en el portapapeles. Intenta cortarlos de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de placer les fichiers dans le presse-papiers. Réessayez de les couper."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファイルをクリップボードに追加できませんでした。もう一度カットしてください。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法将文件放入剪贴板，请重新剪切。"
+          }
+        }
+      }
+    },
     "Cut" : {
       "extractionState" : "manual",
       "localizations" : {

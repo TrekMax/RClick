@@ -40,6 +40,7 @@ enum Key {
     static let actionMenuItems = "RCLICK_ACTION_MENU_ITEMS"
     static let appMenuItems = "RCLICK_APP_MENU_ITEMS"
     static let cutFilePaths = "RCLICK_CUT_FILE_PATHS"
+    static let cutClipboardSession = "RCLICK_CUT_CLIPBOARD_SESSION"
 
 }
 

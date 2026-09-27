@@ -19,10 +19,14 @@ final class ActionServiceTests {
     private final class MockPermission: PermissionProviding {
         var hasAccessResult = false
         var promptResult: URL?
+        var onPrompt: (() -> Void)?
         var saveCalls: [URL] = []
 
         func hasAccess(to url: URL) -> Bool { hasAccessResult }
-        func promptForPermission(for url: URL) async -> URL? { promptResult }
+        func promptForPermission(for url: URL) async -> URL? {
+            onPrompt?()
+            return promptResult
+        }
         func saveBookmark(for url: URL) { saveCalls.append(url) }
     }
 
@@ -136,11 +140,15 @@ final class ActionServiceTests {
             RCAction(id: "cut", name: "Cut", idx: 5, icon: "scissors"),
             RCAction(id: "paste", name: "Paste", idx: 6, icon: "clipboard")
         ]
-        let service = ActionService(state: state, permission: permission, cutStore: store)
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let service = ActionService(state: state, permission: permission, cutStore: store, pasteboard: board)
 
         await service.actionHandler(rid: "cut", target: [source.path], trigger: "ctx-items")
         #expect(fm.fileExists(atPath: source.path))
-        #expect(store.stringArray(forKey: Key.cutFilePaths) == [source.path])
+        #expect(FileClipboard(pasteboard: board, store: store).pendingCut()?.paths == [source.path])
+        let clipboardURLs = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+        #expect(clipboardURLs?.map(\.path) == [source.path])
         permission.hasAccessResult = authorized
         await service.actionHandler(rid: "paste", target: [destination.path], trigger: "ctx-container")
 
@@ -148,10 +156,10 @@ final class ActionServiceTests {
         if authorized {
             #expect(!fm.fileExists(atPath: source.path))
             #expect(try String(contentsOf: destination.appendingPathComponent("Literal%20Name 1.txt"), encoding: .utf8) == "source")
-            #expect(store.object(forKey: Key.cutFilePaths) == nil)
+            #expect(FileClipboard(pasteboard: board, store: store).pendingCut() == nil)
         } else {
             #expect(fm.fileExists(atPath: source.path))
-            #expect(store.stringArray(forKey: Key.cutFilePaths) == [source.path])
+            #expect(FileClipboard(pasteboard: board, store: store).pendingCut()?.paths == [source.path])
         }
     }
 
@@ -179,6 +187,78 @@ final class ActionServiceTests {
 
         #expect(fm.fileExists(atPath: source.path))
         #expect(try String(contentsOf: destination.appendingPathComponent("File.txt"), encoding: .utf8) == "copied")
+    }
+
+    @Test func newFinderCopyReplacesAnEarlierCut() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("rclick-new-copy-\(UUID())")
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let cut = root.appendingPathComponent("Cut.txt")
+        let copied = root.appendingPathComponent("Copied.txt")
+        try Data("cut".utf8).write(to: cut)
+        try Data("copied".utf8).write(to: copied)
+        let suite = "rclick-new-copy-test-\(UUID())"
+        let store = try #require(UserDefaults(suiteName: suite))
+        defer { store.removePersistentDomain(forName: suite) }
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let permission = MockPermission()
+        permission.hasAccessResult = true
+        let state = MockState()
+        state.actions = [.cut, .paste]
+        let service = ActionService(state: state, permission: permission, cutStore: store, pasteboard: board)
+
+        await service.actionHandler(rid: "cut", target: [cut.path], trigger: "ctx-items")
+        board.clearContents()
+        #expect(board.writeObjects([copied as NSURL]))
+        await service.actionHandler(rid: "paste", target: [destination.path], trigger: "ctx-container")
+
+        #expect(fm.fileExists(atPath: cut.path))
+        #expect(fm.fileExists(atPath: copied.path))
+        #expect(!fm.fileExists(atPath: destination.appendingPathComponent("Cut.txt").path))
+        #expect(try String(contentsOf: destination.appendingPathComponent("Copied.txt"), encoding: .utf8) == "copied")
+        #expect(FileClipboard(pasteboard: board, store: store).pendingCut() == nil)
+    }
+
+    @Test(arguments: [true, false])
+    func authorizationDoesNotReplaceTheRequestedPaste(isCut: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("rclick-paste-snapshot-\(UUID())")
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let original = root.appendingPathComponent("Original.txt")
+        let newer = root.appendingPathComponent("Newer.txt")
+        try Data("original".utf8).write(to: original)
+        try Data("newer".utf8).write(to: newer)
+        let suite = "rclick-paste-snapshot-\(UUID())"
+        let store = try #require(UserDefaults(suiteName: suite))
+        defer { store.removePersistentDomain(forName: suite) }
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let clipboard = FileClipboard(pasteboard: board, store: store)
+        if isCut {
+            #expect(clipboard.writeCut(paths: [original.path]))
+        } else {
+            #expect(board.writeObjects([original as NSURL]))
+        }
+        let permission = MockPermission()
+        permission.promptResult = root
+        permission.onPrompt = {
+            #expect(clipboard.writeCut(paths: [newer.path]))
+            permission.hasAccessResult = true
+        }
+        let service = ActionService(state: MockState(), permission: permission, cutStore: store, pasteboard: board)
+
+        await service.pasteFilesAndDirs([destination.path], "ctx-container")
+
+        #expect(fm.fileExists(atPath: original.path) == !isCut)
+        #expect(fm.fileExists(atPath: newer.path))
+        #expect(fm.fileExists(atPath: destination.appendingPathComponent("Original.txt").path))
+        #expect(!fm.fileExists(atPath: destination.appendingPathComponent("Newer.txt").path))
+        #expect(clipboard.pendingCut()?.paths == [newer.path])
     }
 
 }
